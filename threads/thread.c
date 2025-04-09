@@ -28,6 +28,9 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+// sleep 해야 할 thread의 list
+struct list sleep_list; //header file에서 extern으로 선언 다른 file에서 사용 가능하게 static 제거 
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -98,6 +101,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleep_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -280,6 +284,18 @@ thread_block (void)
   schedule ();
 }
 
+
+/* Returns true if thread A has higher priority than thread B. */
+bool
+thread_priority_more(const struct list_elem *a,
+                     const struct list_elem *b,
+                     void *aux UNUSED)
+{
+  const struct thread *t_a = list_entry(a, struct thread, elem);
+  const struct thread *t_b = list_entry(b, struct thread, elem);
+  return t_a->priority > t_b->priority;
+}
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -308,8 +324,15 @@ thread_unblock (struct thread *t)
 
      Likewise, for priority scheduling to work correctly,
      you may also need to apply similar logic in thread_yield() and next_thread_to_run(). */
-  list_push_back (&ready_list, &t->elem);
+  // list_push_back (&ready_list, &t->elem);
+  list_insert_ordered(&ready_list, &t->elem, thread_priority_more, NULL);  // ✅ 높은 priority가 앞으로
+
   t->status = THREAD_READY;
+
+  // Preemption
+  if (thread_current() != idle_thread && t->priority > thread_current()->priority)
+    thread_yield();
+
   intr_set_level (old_level);
 }
 
@@ -378,11 +401,38 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  
+  // if (cur != idle_thread) 
+  //   list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)
+    list_insert_ordered (&ready_list, &cur->elem, thread_priority_more, NULL);
+
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
+}
+
+bool compare_wakeup_time(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+  struct thread *ta = list_entry(a, struct thread, sleep_elem);
+  struct thread *tb = list_entry(b, struct thread, sleep_elem);
+  return ta->wakeup_time < tb->wakeup_time;
+}
+
+void
+thread_sleep (int sleep_time) 
+{
+  struct thread *cur = thread_current();
+  enum intr_level old_level = intr_disable();
+
+  ASSERT(!intr_context());
+
+  cur->wakeup_time = sleep_time;
+  list_insert_ordered(&sleep_list, &cur->sleep_elem, compare_wakeup_time, NULL);
+  // cur->status = THREAD_BLOCKED;
+  // schedule();
+  thread_block();
+
+  intr_set_level(old_level);
 }
 
 /* Invoke function 'func' on all threads, passing along 'aux'.
